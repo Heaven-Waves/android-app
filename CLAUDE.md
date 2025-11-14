@@ -125,3 +125,27 @@ The app uses standard Android resource structure with:
 - Test instrumentation runner: AndroidJUnitRunner
 - Dependencies include AndroidX AppCompat, Material Design, Activity, and ConstraintLayout
 - Native code uses C++ (`.cpp` files) rather than C
+
+## Recording Status Notifications
+
+The audio capture service provides real-time feedback to users about recording status through:
+
+### AudioCaptureService.java Changes
+- **`updateNotification(String contentText)` method**: Dynamically updates the foreground notification with custom status text
+- **Enhanced `createNotification()` method**: Added `.setOngoing(true)` to prevent users from dismissing the notification during active recording
+- **`startAudioCapture()` method**: Calls `updateNotification()` once AudioRecord is successfully initialized, displaying "Audio recording in progress..."
+
+### MainActivity.java Changes
+- **BroadcastReceiver Integration**: Added `RecordingStateReceiver` inner class to listen for recording state changes from the service
+- **Lifecycle Management**: Properly registers/unregisters the broadcast receiver in `onStart()` and `onStop()` lifecycle methods
+- **UI State Tracking**:
+  - Added `isCurrentlyRecording` boolean flag
+  - Status text displays "Status: Recording" or "Status: Not Recording"
+  - Start/stop buttons are enabled/disabled based on recording state
+
+### User Experience Flow
+1. User taps "Start Recording" → service starts and displays notification
+2. Notification text updates to "Audio recording in progress..." once AudioRecord initializes
+3. MainActivity UI shows "Status: Recording" and disables the start button
+4. User taps "Stop Recording" → service stops and notification is dismissed
+5. MainActivity UI updates to "Status: Not Recording" and enables the start button
