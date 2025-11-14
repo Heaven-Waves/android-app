@@ -35,22 +35,20 @@ static jstring gst_native_get_gstreamer_info(JNIEnv *env, jclass klass) {
     return version_jstring;
 }
 
-// JNI method registration
-static JNINativeMethod native_methods[] = {
+// JNI method registration - exported for use in combined JNI_OnLoad
+extern "C" {
+
+static JNINativeMethod gstreamer_native_methods[] = {
     {"nativeInit", "(Landroid/content/Context;)V", (void *)gst_native_init},
     {"nativeGetGStreamerInfo", "()Ljava/lang/String;", (void *)gst_native_get_gstreamer_info}
 };
 
-// JNI_OnLoad - called when the library is loaded
-jint JNI_OnLoad(JavaVM *vm, void *reserved) {
-    JNIEnv *env = NULL;
-
-    if (vm->GetEnv((void **)&env, JNI_VERSION_1_6) != JNI_OK) {
-        LOGE("Failed to get JNI environment");
-        return JNI_ERR;
-    }
-
-    // Find the GStreamer class (adjust package name if needed)
+/**
+ * Register GStreamer native methods
+ * Called from JNI_OnLoad in native-audio-bridge.cpp
+ */
+jint register_gstreamer_methods(JNIEnv *env) {
+    // Find the GStreamer class
     jclass gstreamer_class = env->FindClass("org/freedesktop/gstreamer/GStreamer");
     if (!gstreamer_class) {
         LOGE("Failed to find GStreamer class");
@@ -58,13 +56,14 @@ jint JNI_OnLoad(JavaVM *vm, void *reserved) {
     }
 
     // Register native methods
-    if (env->RegisterNatives(gstreamer_class, native_methods,
-                            sizeof(native_methods) / sizeof(native_methods[0])) < 0) {
-        LOGE("Failed to register native methods");
+    if (env->RegisterNatives(gstreamer_class, gstreamer_native_methods,
+                            sizeof(gstreamer_native_methods) / sizeof(gstreamer_native_methods[0])) < 0) {
+        LOGE("Failed to register GStreamer native methods");
         return JNI_ERR;
     }
 
-    LOGD("JNI_OnLoad completed successfully");
-
-    return JNI_VERSION_1_6;
+    LOGD("GStreamer native methods registered successfully");
+    return JNI_OK;
 }
+
+} // extern "C"
