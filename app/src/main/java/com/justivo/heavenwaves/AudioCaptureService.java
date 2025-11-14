@@ -45,6 +45,23 @@ public class AudioCaptureService extends Service {
     private AudioRecord audioRecord;
     private Thread captureThread;
     private volatile boolean isCapturing = false;
+    private String streamHost = "127.0.0.1"; // Default host
+
+    // Native method declarations for GStreamer pipeline
+    private native boolean nativeInitPipeline(String host, int sampleRate, int channels, String outputPath, int bitrate);
+    private native boolean nativeFeedAudioData(byte[] buffer, int size);
+    private native boolean nativeStartPipeline();
+    private native void nativeStopPipeline();
+    private native String nativeGetLastError();
+
+    // Load native library
+    static {
+        try {
+            System.loadLibrary("audio_bridge");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "Failed to load audio_bridge native library: " + e.getMessage());
+        }
+    }
 
 
     @Override
@@ -68,6 +85,12 @@ public class AudioCaptureService extends Service {
         }
 
         if (intent.hasExtra("MEDIA_PROJECTION")) {
+            // Get host from intent if provided
+            if (intent.hasExtra("HOST")) {
+                streamHost = intent.getStringExtra("HOST");
+                Log.i(TAG, "Stream host set to: " + streamHost);
+            }
+
             // IMPORTANT: Start foreground service BEFORE getting MediaProjection
             // Android requires the service to be in foreground mode with MEDIA_PROJECTION type
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -150,6 +173,41 @@ public class AudioCaptureService extends Service {
                 audioRecord.release();
                 audioRecord = null;
                 return;
+            }
+
+            java.io.File outputDir = getExternalFilesDir(null);
+            if (outputDir == null) {
+                outputDir = getFilesDir();
+            }
+            String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                    .format(new java.util.Date());
+            String gstreamerOutputPath = new java.io.File(outputDir, "audio_gstreamer_" + timestamp + ".ogg")
+                    .getAbsolutePath();
+
+            Log.i(TAG, "Initializing GStreamer pipeline with output: " + gstreamerOutputPath);
+            Log.i(TAG, "Streaming to host: " + streamHost);
+
+            // Initialize pipeline with 128kbps bitrate for Opus
+            boolean pipelineInitialized = nativeInitPipeline(streamHost,
+                    SAMPLE_RATE,
+                    NUM_CHANNELS,
+                    gstreamerOutputPath,
+                    128000);
+
+            if (!pipelineInitialized) {
+                String error = nativeGetLastError();
+                Log.e(TAG, "Failed to initialize GStreamer pipeline: " + error);
+                Log.w(TAG, "Continuing with Java-only audio recording");
+            } else {
+                // Start the pipeline
+                boolean pipelineStarted = nativeStartPipeline();
+                if (!pipelineStarted) {
+                    String error = nativeGetLastError();
+                    Log.e(TAG, "Failed to start GStreamer pipeline: " + error);
+                    Log.w(TAG, "Continuing with Java-only audio recording");
+                } else {
+                    Log.i(TAG, "GStreamer pipeline started successfully");
+                }
             }
 
             // Start capture thread
@@ -298,13 +356,20 @@ public class AudioCaptureService extends Service {
 
                         // TODO: Process audio data here - send to JNI or callback
                         // processAudioData(buffer, dataSize);
-                        // Write audio data to file
+
+                        // Write audio data to file (Java - for testing/debugging)
                         if (fileOutputStream != null) {
                             try {
                                 fileOutputStream.write(buffer, 0, dataSize);
                             } catch (java.io.IOException e) {
                                 Log.e(TAG, "Error writing audio data: " + e.getMessage());
                             }
+                        }
+
+                        // Feed audio data to GStreamer pipeline
+                        if (!nativeFeedAudioData(buffer, dataSize)) {
+                            String error = nativeGetLastError();
+                            Log.w(TAG, "Failed to feed audio data to GStreamer: " + error);
                         }
                     }
                 } else {
@@ -320,13 +385,19 @@ public class AudioCaptureService extends Service {
                         // TODO: Process audio data here - send to JNI or callback
                         // processAudioData(buffer, dataSize);
 
-                        // Write audio data to file
+                        // Write audio data to file (Java - for testing/debugging)
                         if (fileOutputStream != null) {
                             try {
                                 fileOutputStream.write(buffer, 0, dataSize);
                             } catch (java.io.IOException e) {
                                 Log.e(TAG, "Error writing audio data: " + e.getMessage());
                             }
+                        }
+
+                        // Feed audio data to GStreamer pipeline
+                        if (!nativeFeedAudioData(buffer, dataSize)) {
+                            String error = nativeGetLastError();
+                            Log.w(TAG, "Failed to feed audio data to GStreamer: " + error);
                         }
                     }
                 }
@@ -354,6 +425,14 @@ public class AudioCaptureService extends Service {
 
     private void stopAudioCapture() {
         isCapturing = false;
+
+        // Stop GStreamer pipeline first
+        try {
+            Log.i(TAG, "Stopping GStreamer pipeline");
+            nativeStopPipeline();
+        } catch (Exception e) {
+            Log.e(TAG, "Error stopping GStreamer pipeline: " + e.getMessage());
+        }
 
         if (audioRecord != null) {
             try {
