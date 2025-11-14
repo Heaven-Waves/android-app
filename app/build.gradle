@@ -58,6 +58,8 @@ android {
 
 }
 
+// hackery way to disable this step that throws error at build time
+task 'prepareKotlinBuildScriptModel' {}
 
 dependencies {
 
