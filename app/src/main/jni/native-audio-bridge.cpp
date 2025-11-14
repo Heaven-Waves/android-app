@@ -102,7 +102,13 @@ class AudioPipeline {
          * Creates pipeline: appsrc ! audioconvert ! audioresample ! opusenc ! oggmux ! filesink
          * Following GStreamer best practice: use gst_parse_launch for simple pipelines
          */
-        bool init(gint sample_rate, gint channels, const std::string &output_path, gint bitrate) {
+        bool init(
+                const std::string &host,
+                gint sample_rate,
+                gint channels,
+                const std::string &output_path,
+                gint bitrate
+                ) {
             if (is_initialized) {
                 LOGW("Pipeline already initialized");
                 cleanup();
@@ -120,8 +126,8 @@ class AudioPipeline {
                 "! audioconvert "
                 "! audioresample "
                 "! opusenc bitrate=" + std::to_string(bitrate) + " "
-                "! oggmux "
-                "! filesink location=\"" + output_path + "\" sync=false";
+                "! rtpopuspay "
+                "! udpsink host=" + host + " port=5004 sync=false";
 
             // Parse and create pipeline
             GError *error = nullptr;
@@ -331,12 +337,21 @@ extern "C" jint register_gstreamer_methods(JNIEnv *env);
  * Initialize the GStreamer audio pipeline
  */
 static jboolean native_init_pipeline(JNIEnv *env, jobject thiz,
+                                      jstring host,
                                       jint sample_rate, jint channels,
                                       jstring output_path, jint bitrate) {
+    // Get host string
+    const char *host_str = env->GetStringUTFChars(host, nullptr);
+    if (!host_str) {
+        LOGE("Failed to get host string");
+        return JNI_FALSE;
+    }
+
     // Get output path string
     const char *path_str = env->GetStringUTFChars(output_path, nullptr);
     if (!path_str) {
         LOGE("Failed to get output path string");
+        env->ReleaseStringUTFChars(host, host_str);
         return JNI_FALSE;
     }
 
@@ -344,9 +359,10 @@ static jboolean native_init_pipeline(JNIEnv *env, jobject thiz,
     g_pipeline = std::make_unique<AudioPipeline>();
 
     // Initialize
-    bool result = g_pipeline->init(sample_rate, channels, path_str, bitrate);
+    bool result = g_pipeline->init(host_str, sample_rate, channels, path_str, bitrate);
 
-    // Release string
+    // Release strings
+    env->ReleaseStringUTFChars(host, host_str);
     env->ReleaseStringUTFChars(output_path, path_str);
 
     if (!result) {
@@ -426,7 +442,7 @@ static jstring native_get_last_error(JNIEnv *env, jobject thiz) {
  * Native method table for AudioCaptureService
  */
 static JNINativeMethod native_methods[] = {
-    {"nativeInitPipeline", "(IILjava/lang/String;I)Z", (void *) native_init_pipeline},
+    {"nativeInitPipeline", "(Ljava/lang/String;IILjava/lang/String;I)Z", (void *) native_init_pipeline},
     {"nativeStartPipeline", "()Z", (void *) native_start_pipeline},
     {"nativeFeedAudioData", "([BI)Z", (void *) native_feed_audio_data},
     {"nativeStopPipeline", "()V", (void *) native_stop_pipeline},
