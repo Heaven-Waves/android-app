@@ -1,10 +1,16 @@
 package com.justivo.heavenwaves;
 
+import android.content.Context;
+import android.content.Intent;
+import android.media.projection.MediaProjectionManager;
 import android.os.Bundle;
+import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -18,6 +24,26 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("gstreamer_android");
         System.loadLibrary("audio_bridge");
     }
+
+    private MediaProjectionManager mediaProjectionManager;
+    private Button startButton;
+    private Button stopButton;
+    private TextView statusText;
+
+    private final ActivityResultLauncher<Intent> mediaProjectionLauncher =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                    // Permission granted, start the service
+                    Intent serviceIntent = new Intent(this, AudioCaptureService.class);
+                    serviceIntent.putExtra("MEDIA_PROJECTION", result.getData());
+                    startForegroundService(serviceIntent);
+
+                    updateUIState(true);
+                    Toast.makeText(this, "Audio capture started", Toast.LENGTH_SHORT).show();
+                } else {
+                    Toast.makeText(this, "Media projection permission denied", Toast.LENGTH_SHORT).show();
+                }
+            });
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
