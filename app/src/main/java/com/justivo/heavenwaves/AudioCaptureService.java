@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.Context;
@@ -475,6 +476,17 @@ public class AudioCaptureService extends Service {
     private Notification createNotification() {
         Bitmap largeIcon = BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher);
 
+        // Create intent to open MainActivity when notification is tapped
+        Intent notificationIntent = new Intent(this, MainActivity.class);
+        notificationIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                notificationIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Audio Capture Active")
                 .setContentText("Capturing system audio...")
@@ -482,6 +494,7 @@ public class AudioCaptureService extends Service {
                 .setLargeIcon(largeIcon)
                 .setSilent(true)
                 .setOngoing(true)
+                .setContentIntent(pendingIntent)
                 .build();
     }
 
