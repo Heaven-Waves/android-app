@@ -3,7 +3,7 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_MODULE    := audio_bridge
-LOCAL_SRC_FILES := native-audio-bridge.cpp hello-world.cpp
+LOCAL_SRC_FILES := native-audio-bridge.cpp gstreamer-info.cpp
 LOCAL_SHARED_LIBRARIES := gstreamer_android
 LOCAL_LDLIBS := -llog
 
