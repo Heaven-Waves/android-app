@@ -2,13 +2,12 @@
  * native-audio-bridge.cpp
  *
  * GStreamer-based audio streaming bridge for HeavenWaves
- * Receives audio data from Java AudioCaptureService and processes it through
- * a GStreamer pipeline for Opus encoding and file output.
+ * Simplified C++ implementation following GStreamer best practices
  */
 
 #include <jni.h>
 #include <string>
-#include <pthread.h>
+#include <memory>
 #include <android/log.h>
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
@@ -19,526 +18,454 @@
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-// Pipeline state structure
-typedef struct {
-    GstElement *pipeline;
-    GstElement *appsrc;
-    GstElement *audioconvert;
-    GstElement *audioresample;
-    GstElement *opusenc;
-    GstElement *oggmux;
-    GstElement *filesink;
-
-    GMainLoop *main_loop;
-    pthread_t loop_thread;
-
-    gint sample_rate;
-    gint channels;
-    gint bitrate;
-
-    gboolean is_initialized;
-    gboolean is_playing;
-    gboolean mutex_initialized;
-
-    std::string last_error;
-    pthread_mutex_t error_mutex;
-
-} PipelineState;
-
-// Global pipeline state
-static PipelineState g_state = {0};
-
-// Forward declarations
-static void* pipeline_loop_thread(void* data);
-static gboolean bus_message_callback(GstBus *bus, GstMessage *msg, gpointer data);
-static void cleanup_pipeline();
-
 /**
- * Initialize the GStreamer pipeline with specified audio parameters
+ * AudioPipeline - Encapsulates GStreamer pipeline state and operations
+ *
+ * Design follows GStreamer best practices:
+ * - Uses gst_parse_launch for simple pipeline creation
+ * - Proper reference counting with GStreamer objects
+ * - Bus watch for message handling
+ * - Clean state transitions
  */
-static jboolean init_pipeline(JNIEnv *env, jint sample_rate, jint channels,
-                              const char *output_path, jint bitrate) {
-    LOGI("Initializing GStreamer pipeline: %dHz, %d channels, %d bps, output: %s",
-         sample_rate, channels, bitrate, output_path);
+class AudioPipeline {
+    private:
+        GstElement *pipeline = nullptr;
+        GstElement *appsrc = nullptr;
+        GstBus *bus = nullptr;
+        guint bus_watch_id = 0;
 
-    // Initialize mutex if not already done
-    if (!g_state.mutex_initialized) {
-        pthread_mutex_init(&g_state.error_mutex, NULL);
-        g_state.mutex_initialized = TRUE;
-    }
+        std::string last_error;
+        bool is_initialized = false;
 
-    // Clean up any existing pipeline
-    if (g_state.is_initialized) {
-        LOGW("Pipeline already initialized, cleaning up first");
-        cleanup_pipeline();
-    }
+        // Audio parameters
+        gint _sample_rate = 0;
+        gint _channels = 0;
 
-    // Create pipeline elements
-    g_state.pipeline = gst_pipeline_new("audio-pipeline");
-    g_state.appsrc = gst_element_factory_make("appsrc", "audio-source");
-    g_state.audioconvert = gst_element_factory_make("audioconvert", "converter");
-    g_state.audioresample = gst_element_factory_make("audioresample", "resampler");
-    g_state.opusenc = gst_element_factory_make("opusenc", "encoder");
-    g_state.oggmux = gst_element_factory_make("oggmux", "muxer");
-    g_state.filesink = gst_element_factory_make("filesink", "file-output");
+        /**
+         * Bus message callback - handles pipeline messages
+         */
+        static gboolean bus_callback(GstBus *bus, GstMessage *msg, gpointer data) {
+            AudioPipeline *pipeline = static_cast<AudioPipeline*>(data);
 
-    // Check if all elements were created successfully
-    if (!g_state.pipeline || !g_state.appsrc || !g_state.audioconvert ||
-        !g_state.audioresample || !g_state.opusenc || !g_state.oggmux ||
-        !g_state.filesink) {
+            switch (GST_MESSAGE_TYPE(msg)) {
+                case GST_MESSAGE_ERROR: {
+                    GError *err = nullptr;
+                    gchar *debug_info = nullptr;
+                    gst_message_parse_error(msg, &err, &debug_info);
 
-        pthread_mutex_lock(&g_state.error_mutex);
-        g_state.last_error = "Failed to create one or more GStreamer elements. "
-                            "Check if required plugins (opus, ogg) are available.";
-        pthread_mutex_unlock(&g_state.error_mutex);
-        LOGE("%s", g_state.last_error.c_str());
+                    pipeline->last_error = std::string("GStreamer error: ") + err->message;
+                    LOGE("Pipeline error from %s: %s", GST_OBJECT_NAME(msg->src), err->message);
+                    LOGE("Debug info: %s", debug_info ? debug_info : "none");
 
-        cleanup_pipeline();
-        return JNI_FALSE;
-    }
+                    g_clear_error(&err);
+                    g_free(debug_info);
+                    break;
+                }
 
-    // Configure appsrc
-    GstCaps *caps = gst_caps_new_simple("audio/x-raw",
-        "format", G_TYPE_STRING, "S16LE",      // 16-bit little-endian PCM
-        "rate", G_TYPE_INT, sample_rate,
-        "channels", G_TYPE_INT, channels,
-        "layout", G_TYPE_STRING, "interleaved",
-        NULL);
+                case GST_MESSAGE_WARNING: {
+                    GError *err = nullptr;
+                    gchar *debug_info = nullptr;
+                    gst_message_parse_warning(msg, &err, &debug_info);
 
-    g_object_set(G_OBJECT(g_state.appsrc),
-        "caps", caps,
-        "stream-type", GST_APP_STREAM_TYPE_STREAM,  // Live stream, no seeking
-        "format", GST_FORMAT_TIME,
-        "is-live", TRUE,
-        "block", TRUE,                               // Block when queue is full
-        "max-bytes", (guint64)(sample_rate * channels * 2 * 2), // 2 seconds buffer
-        NULL);
+                    LOGW("Pipeline warning from %s: %s", GST_OBJECT_NAME(msg->src), err->message);
 
-    gst_caps_unref(caps);
+                    g_clear_error(&err);
+                    g_free(debug_info);
+                    break;
+                }
 
-    // Configure Opus encoder
-    g_object_set(G_OBJECT(g_state.opusenc),
-        "bitrate", bitrate,
-        "audio-type", 2048,  // Generic audio
-        NULL);
+                case GST_MESSAGE_EOS:
+                    LOGI("End-of-stream reached");
+                    break;
 
-    // Configure file sink
-    g_object_set(G_OBJECT(g_state.filesink),
-        "location", output_path,
-        "sync", FALSE,       // Don't sync to clock for file writing
-        NULL);
+                case GST_MESSAGE_STATE_CHANGED:
+                    if (GST_MESSAGE_SRC(msg) == GST_OBJECT(pipeline->pipeline)) {
+                        GstState old_state, new_state, pending_state;
+                        gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
+                        LOGD("Pipeline state: %s -> %s",
+                             gst_element_state_get_name(old_state),
+                             gst_element_state_get_name(new_state));
+                    }
+                    break;
 
-    // Add elements to pipeline
-    gst_bin_add_many(GST_BIN(g_state.pipeline),
-        g_state.appsrc,
-        g_state.audioconvert,
-        g_state.audioresample,
-        g_state.opusenc,
-        g_state.oggmux,
-        g_state.filesink,
-        NULL);
-
-    // Link elements: appsrc -> audioconvert -> audioresample -> opusenc -> oggmux -> filesink
-    if (!gst_element_link_many(
-            g_state.appsrc,
-            g_state.audioconvert,
-            g_state.audioresample,
-            g_state.opusenc,
-            g_state.oggmux,
-            g_state.filesink,
-            NULL)) {
-
-        pthread_mutex_lock(&g_state.error_mutex);
-        g_state.last_error = "Failed to link GStreamer pipeline elements";
-        pthread_mutex_unlock(&g_state.error_mutex);
-        LOGE("%s", g_state.last_error.c_str());
-
-        cleanup_pipeline();
-        return JNI_FALSE;
-    }
-
-    // Set up bus message handler
-    GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(g_state.pipeline));
-    gst_bus_add_watch(bus, bus_message_callback, NULL);
-    gst_object_unref(bus);
-
-    // Store configuration
-    g_state.sample_rate = sample_rate;
-    g_state.channels = channels;
-    g_state.bitrate = bitrate;
-    g_state.is_initialized = TRUE;
-    g_state.is_playing = FALSE;
-
-    LOGI("Pipeline initialized successfully");
-    return JNI_TRUE;
-}
-
-/**
- * Start the GStreamer pipeline
- */
-static jboolean start_pipeline() {
-    if (!g_state.is_initialized) {
-        pthread_mutex_lock(&g_state.error_mutex);
-        g_state.last_error = "Pipeline not initialized";
-        pthread_mutex_unlock(&g_state.error_mutex);
-        LOGE("%s", g_state.last_error.c_str());
-        return JNI_FALSE;
-    }
-
-    if (g_state.is_playing) {
-        LOGW("Pipeline already playing");
-        return JNI_TRUE;
-    }
-
-    LOGI("Starting GStreamer pipeline");
-
-    // Create main loop
-    g_state.main_loop = g_main_loop_new(NULL, FALSE);
-
-    // Start loop thread
-    if (pthread_create(&g_state.loop_thread, NULL, pipeline_loop_thread, NULL) != 0) {
-        pthread_mutex_lock(&g_state.error_mutex);
-        g_state.last_error = "Failed to create main loop thread";
-        pthread_mutex_unlock(&g_state.error_mutex);
-        LOGE("%s", g_state.last_error.c_str());
-
-        g_main_loop_unref(g_state.main_loop);
-        g_state.main_loop = NULL;
-        return JNI_FALSE;
-    }
-
-    // Set pipeline to PLAYING state
-    GstStateChangeReturn ret = gst_element_set_state(g_state.pipeline, GST_STATE_PLAYING);
-
-    if (ret == GST_STATE_CHANGE_FAILURE) {
-        pthread_mutex_lock(&g_state.error_mutex);
-        g_state.last_error = "Failed to set pipeline to PLAYING state";
-        pthread_mutex_unlock(&g_state.error_mutex);
-        LOGE("%s", g_state.last_error.c_str());
-
-        // Stop the loop thread
-        if (g_state.main_loop) {
-            g_main_loop_quit(g_state.main_loop);
-            pthread_join(g_state.loop_thread, NULL);
-            g_main_loop_unref(g_state.main_loop);
-            g_state.main_loop = NULL;
-        }
-
-        return JNI_FALSE;
-    }
-
-    g_state.is_playing = TRUE;
-    LOGI("Pipeline started successfully");
-    return JNI_TRUE;
-}
-
-/**
- * Feed audio data to the GStreamer pipeline
- */
-static jboolean feed_audio_data(JNIEnv *env, jbyteArray buffer, jint size) {
-    if (!g_state.is_playing) {
-        // Silently ignore data if pipeline isn't playing
-        return JNI_TRUE;
-    }
-
-    // Get buffer data from Java
-    jbyte *buffer_data = env->GetByteArrayElements(buffer, NULL);
-    if (!buffer_data) {
-        LOGE("Failed to get buffer data from Java");
-        return JNI_FALSE;
-    }
-
-    // Create GStreamer buffer
-    GstBuffer *gst_buffer = gst_buffer_new_allocate(NULL, size, NULL);
-    if (!gst_buffer) {
-        LOGE("Failed to allocate GStreamer buffer");
-        env->ReleaseByteArrayElements(buffer, buffer_data, JNI_ABORT);
-        return JNI_FALSE;
-    }
-
-    // Copy data to GStreamer buffer
-    GstMapInfo map;
-    if (!gst_buffer_map(gst_buffer, &map, GST_MAP_WRITE)) {
-        LOGE("Failed to map GStreamer buffer");
-        gst_buffer_unref(gst_buffer);
-        env->ReleaseByteArrayElements(buffer, buffer_data, JNI_ABORT);
-        return JNI_FALSE;
-    }
-
-    memcpy(map.data, buffer_data, size);
-    gst_buffer_unmap(gst_buffer, &map);
-
-    // Release Java buffer
-    env->ReleaseByteArrayElements(buffer, buffer_data, JNI_ABORT);
-
-    // Push buffer to appsrc
-    GstFlowReturn flow_ret = gst_app_src_push_buffer(GST_APP_SRC(g_state.appsrc), gst_buffer);
-
-    if (flow_ret != GST_FLOW_OK) {
-        pthread_mutex_lock(&g_state.error_mutex);
-        g_state.last_error = "Failed to push buffer to pipeline (flow error: " +
-                            std::to_string(flow_ret) + ")";
-        pthread_mutex_unlock(&g_state.error_mutex);
-        LOGE("%s", g_state.last_error.c_str());
-        return JNI_FALSE;
-    }
-
-    return JNI_TRUE;
-}
-
-/**
- * Stop the GStreamer pipeline
- */
-static void stop_pipeline() {
-    if (!g_state.is_initialized) {
-        LOGW("Pipeline not initialized, nothing to stop");
-        return;
-    }
-
-    LOGI("Stopping GStreamer pipeline");
-    g_state.is_playing = FALSE;
-
-    // Send EOS to appsrc
-    if (g_state.appsrc) {
-        gst_app_src_end_of_stream(GST_APP_SRC(g_state.appsrc));
-        LOGD("Sent EOS to appsrc");
-    }
-
-    // Wait for EOS message or timeout (3 seconds)
-    if (g_state.pipeline) {
-        GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(g_state.pipeline));
-        GstMessage *msg = gst_bus_timed_pop_filtered(bus,
-            3 * GST_SECOND,
-            (GstMessageType)(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
-
-        if (msg) {
-            if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
-                GError *err;
-                gchar *debug_info;
-                gst_message_parse_error(msg, &err, &debug_info);
-                LOGE("Error during pipeline shutdown: %s", err->message);
-                g_error_free(err);
-                g_free(debug_info);
-            } else {
-                LOGD("Received EOS during shutdown");
+                default:
+                    break;
             }
-            gst_message_unref(msg);
-        } else {
-            LOGW("Did not receive EOS within timeout");
+
+            return TRUE;
         }
 
-        gst_object_unref(bus);
-    }
-
-    // Set pipeline to NULL state
-    if (g_state.pipeline) {
-        gst_element_set_state(g_state.pipeline, GST_STATE_NULL);
-        LOGD("Pipeline set to NULL state");
-    }
-
-    // Stop main loop
-    if (g_state.main_loop) {
-        g_main_loop_quit(g_state.main_loop);
-        pthread_join(g_state.loop_thread, NULL);
-        g_main_loop_unref(g_state.main_loop);
-        g_state.main_loop = NULL;
-        LOGD("Main loop stopped");
-    }
-
-    LOGI("Pipeline stopped successfully");
-}
-
-/**
- * Clean up and free all pipeline resources
- */
-static void cleanup_pipeline() {
-    LOGI("Cleaning up pipeline resources");
-
-    if (g_state.is_playing) {
-        stop_pipeline();
-    }
-
-    if (g_state.pipeline) {
-        gst_object_unref(g_state.pipeline);
-        g_state.pipeline = NULL;
-    }
-
-    // Reset element pointers (they were unreferenced with the pipeline)
-    g_state.appsrc = NULL;
-    g_state.audioconvert = NULL;
-    g_state.audioresample = NULL;
-    g_state.opusenc = NULL;
-    g_state.oggmux = NULL;
-    g_state.filesink = NULL;
-
-    g_state.is_initialized = FALSE;
-    g_state.is_playing = FALSE;
-
-    LOGI("Pipeline cleanup complete");
-}
-
-/**
- * Get the last error message
- */
-static std::string get_last_error() {
-    pthread_mutex_lock(&g_state.error_mutex);
-    std::string error = g_state.last_error;
-    pthread_mutex_unlock(&g_state.error_mutex);
-    return error;
-}
-
-/**
- * GStreamer bus message callback
- */
-static gboolean bus_message_callback(GstBus *bus, GstMessage *msg, gpointer data) {
-    switch (GST_MESSAGE_TYPE(msg)) {
-        case GST_MESSAGE_ERROR: {
-            GError *err;
-            gchar *debug_info;
-            gst_message_parse_error(msg, &err, &debug_info);
-
-            pthread_mutex_lock(&g_state.error_mutex);
-            g_state.last_error = std::string("GStreamer Error: ") + err->message;
-            pthread_mutex_unlock(&g_state.error_mutex);
-
-            LOGE("GStreamer error from %s: %s",
-                 GST_OBJECT_NAME(msg->src), err->message);
-            LOGE("Debug info: %s", debug_info ? debug_info : "none");
-
-            g_error_free(err);
-            g_free(debug_info);
-
-            // Stop the main loop on error
-            if (g_state.main_loop) {
-                g_main_loop_quit(g_state.main_loop);
+    public:
+        /**
+         * Initialize the GStreamer pipeline
+         *
+         * Creates pipeline: appsrc ! audioconvert ! audioresample ! opusenc ! oggmux ! filesink
+         * Following GStreamer best practice: use gst_parse_launch for simple pipelines
+         */
+        bool init(gint sample_rate, gint channels, const std::string &output_path, gint bitrate) {
+            if (is_initialized) {
+                LOGW("Pipeline already initialized");
+                cleanup();
             }
-            break;
-        }
 
-        case GST_MESSAGE_WARNING: {
-            GError *err;
-            gchar *debug_info;
-            gst_message_parse_warning(msg, &err, &debug_info);
+            this->_sample_rate = sample_rate;
+            this->_channels = channels;
 
-            LOGW("GStreamer warning from %s: %s",
-                 GST_OBJECT_NAME(msg->src), err->message);
-            LOGW("Debug info: %s", debug_info ? debug_info : "none");
+            LOGI("Initializing pipeline: %dHz, %dch, %dbps -> %s",
+                 sample_rate, channels, bitrate, output_path.c_str());
 
-            g_error_free(err);
-            g_free(debug_info);
-            break;
-        }
+            // Build pipeline string
+            std::string pipeline_desc =
+                "appsrc name=audiosrc is-live=true format=time "
+                "! audioconvert "
+                "! audioresample "
+                "! opusenc bitrate=" + std::to_string(bitrate) + " "
+                "! oggmux "
+                "! filesink location=\"" + output_path + "\" sync=false";
 
-        case GST_MESSAGE_EOS:
-            LOGI("End-of-stream reached");
-            if (g_state.main_loop) {
-                g_main_loop_quit(g_state.main_loop);
+            // Parse and create pipeline
+            GError *error = nullptr;
+            pipeline = gst_parse_launch(pipeline_desc.c_str(), &error);
+
+            if (!pipeline || error) {
+                last_error = error ? error->message : "Failed to create pipeline";
+                LOGE("%s", last_error.c_str());
+                g_clear_error(&error);
+                return false;
             }
-            break;
 
-        case GST_MESSAGE_STATE_CHANGED: {
-            if (GST_MESSAGE_SRC(msg) == GST_OBJECT(g_state.pipeline)) {
-                GstState old_state, new_state, pending_state;
-                gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
-                LOGD("Pipeline state changed: %s -> %s",
-                     gst_element_state_get_name(old_state),
-                     gst_element_state_get_name(new_state));
+            // Get appsrc element
+            appsrc = gst_bin_get_by_name(GST_BIN(pipeline), "audiosrc");
+            if (!appsrc) {
+                last_error = "Failed to get appsrc element";
+                LOGE("%s", last_error.c_str());
+                cleanup();
+                return false;
             }
-            break;
+
+            // Configure appsrc caps
+            GstCaps *caps = gst_caps_new_simple("audio/x-raw",
+                "format", G_TYPE_STRING, "S16LE",
+                "rate", G_TYPE_INT, sample_rate,
+                "channels", G_TYPE_INT, channels,
+                "layout", G_TYPE_STRING, "interleaved",
+                nullptr);
+
+            g_object_set(G_OBJECT(appsrc),
+                "caps", caps,
+                "stream-type", GST_APP_STREAM_TYPE_STREAM,
+                "format", GST_FORMAT_TIME,
+                "max-bytes", (guint64)(sample_rate * channels * 2 * 2), // 2 seconds buffer
+                nullptr);
+
+            gst_caps_unref(caps);
+
+            // Setup bus watch for messages
+            bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
+            bus_watch_id = gst_bus_add_watch(bus, bus_callback, this);
+            gst_object_unref(bus);
+
+            is_initialized = true;
+            LOGI("Pipeline initialized successfully");
+            return true;
         }
 
-        default:
-            break;
-    }
+        /**
+         * Start the pipeline
+         */
+        bool start() {
+            if (!is_initialized) {
+                last_error = "Pipeline not initialized";
+                LOGE("%s", last_error.c_str());
+                return false;
+            }
 
-    return TRUE;  // Keep receiving messages
-}
+            LOGI("Starting pipeline");
 
-/**
- * Pipeline main loop thread
- */
-static void* pipeline_loop_thread(void* data) {
-    LOGD("Pipeline loop thread started");
-    g_main_loop_run(g_state.main_loop);
-    LOGD("Pipeline loop thread exiting");
-    return NULL;
-}
+            GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+            if (ret == GST_STATE_CHANGE_FAILURE) {
+                last_error = "Failed to start pipeline";
+                LOGE("%s", last_error.c_str());
+                return false;
+            }
+
+            LOGI("Pipeline started successfully");
+            return true;
+        }
+
+        /**
+         * Feed audio data to the pipeline
+         * Following GStreamer best practice: use gst_app_src_push_buffer
+         */
+        bool push_data(const guint8 *data, gsize size) {
+            if (!is_initialized || !appsrc) {
+                return false;
+            }
+
+            // Create buffer and copy data
+            GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
+            if (!buffer) {
+                LOGE("Failed to allocate buffer");
+                return false;
+            }
+
+            // Map and fill buffer
+            GstMapInfo map;
+            if (!gst_buffer_map(buffer, &map, GST_MAP_WRITE)) {
+                LOGE("Failed to map buffer");
+                gst_buffer_unref(buffer);
+                return false;
+            }
+
+            memcpy(map.data, data, size);
+            gst_buffer_unmap(buffer, &map);
+
+            // Push to appsrc
+            GstFlowReturn ret = gst_app_src_push_buffer(GST_APP_SRC(appsrc), buffer);
+
+            if (ret != GST_FLOW_OK) {
+                last_error = "Flow error: " + std::to_string(ret);
+                LOGW("Push buffer failed: %s", gst_flow_get_name(ret));
+                return false;
+            }
+
+            return true;
+        }
+
+        /**
+         * Stop the pipeline gracefully
+         * Following GStreamer best practice: send EOS and wait for completion
+         */
+        void stop() {
+            if (!is_initialized) {
+                return;
+            }
+
+            LOGI("Stopping pipeline");
+
+            // Send EOS to appsrc for graceful shutdown
+            if (appsrc) {
+                gst_app_src_end_of_stream(GST_APP_SRC(appsrc));
+            }
+
+            // Wait for EOS message on the bus (with timeout)
+            if (pipeline) {
+                GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
+                GstMessage *msg = gst_bus_timed_pop_filtered(bus,
+                    3 * GST_SECOND,
+                    static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+
+                if (msg) {
+                    if (GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ERROR) {
+                        LOGW("Error during shutdown");
+                    }
+                    gst_message_unref(msg);
+                } else {
+                    LOGW("Timeout waiting for EOS");
+                }
+
+                gst_object_unref(bus);
+            }
+
+            // Set to NULL state
+            if (pipeline) {
+                gst_element_set_state(pipeline, GST_STATE_NULL);
+            }
+
+            LOGI("Pipeline stopped");
+        }
+
+        /**
+         * Cleanup all resources
+         * Following RAII principles for resource management
+         */
+        void cleanup() {
+            LOGD("Cleaning up pipeline");
+
+            if (bus_watch_id > 0) {
+                g_source_remove(bus_watch_id);
+                bus_watch_id = 0;
+            }
+
+            if (appsrc) {
+                gst_object_unref(appsrc);
+                appsrc = nullptr;
+            }
+
+            if (pipeline) {
+                gst_object_unref(pipeline);
+                pipeline = nullptr;
+            }
+
+            is_initialized = false;
+            LOGD("Cleanup complete");
+        }
+
+        /**
+         * Get last error message
+         */
+        std::string get_last_error() const {
+            return last_error;
+        }
+
+        /**
+         * Destructor - ensure cleanup
+         */
+        ~AudioPipeline() {
+            stop();
+            cleanup();
+        }
+};
+
+// Global pipeline instance
+static std::unique_ptr<AudioPipeline> g_pipeline;
+
+// Forward declaration - implemented in gstreamer-info.cpp
+extern "C" jint register_gstreamer_methods(JNIEnv *env);
 
 // ============================================================================
-// JNI Method Implementations
+// JNI Native Method Implementations
 // ============================================================================
-
-extern "C" {
 
 /**
  * Initialize the GStreamer audio pipeline
- *
- * @param sample_rate Audio sample rate (e.g., 48000)
- * @param channels Number of audio channels (1=mono, 2=stereo)
- * @param output_path Full path to output file
- * @param bitrate Opus encoder bitrate in bps (e.g., 128000)
- * @return true if initialization successful, false otherwise
  */
-JNIEXPORT jboolean JNICALL
-Java_com_justivo_heavenwaves_AudioCaptureService_nativeInitPipeline(
-        JNIEnv *env, jobject thiz,
-        jint sample_rate, jint channels, jstring output_path, jint bitrate) {
+static jboolean native_init_pipeline(JNIEnv *env, jobject thiz,
+                                      jint sample_rate, jint channels,
+                                      jstring output_path, jint bitrate) {
+    // Get output path string
+    const char *path_str = env->GetStringUTFChars(output_path, nullptr);
+    if (!path_str) {
+        LOGE("Failed to get output path string");
+        return JNI_FALSE;
+    }
 
-    const char *path = env->GetStringUTFChars(output_path, NULL);
-    jboolean result = init_pipeline(env, sample_rate, channels, path, bitrate);
-    env->ReleaseStringUTFChars(output_path, path);
+    // Create new pipeline
+    g_pipeline = std::make_unique<AudioPipeline>();
 
-    return result;
-}
+    // Initialize
+    bool result = g_pipeline->init(sample_rate, channels, path_str, bitrate);
 
-/**
- * Feed audio data to the GStreamer pipeline
- *
- * @param buffer Audio data buffer (16-bit PCM)
- * @param size Size of data in bytes
- * @return true if data was accepted, false on error
- */
-JNIEXPORT jboolean JNICALL
-Java_com_justivo_heavenwaves_AudioCaptureService_nativeFeedAudioData(
-        JNIEnv *env, jobject thiz,
-        jbyteArray buffer, jint size) {
+    // Release string
+    env->ReleaseStringUTFChars(output_path, path_str);
 
-    return feed_audio_data(env, buffer, size);
+    if (!result) {
+        g_pipeline.reset();
+    }
+
+    return result ? JNI_TRUE : JNI_FALSE;
 }
 
 /**
  * Start the GStreamer pipeline
- *
- * @return true if pipeline started successfully, false otherwise
  */
-JNIEXPORT jboolean JNICALL
-Java_com_justivo_heavenwaves_AudioCaptureService_nativeStartPipeline(
-        JNIEnv *env, jobject thiz) {
+static jboolean native_start_pipeline(JNIEnv *env, jobject thiz) {
+    if (!g_pipeline) {
+        LOGE("Pipeline not initialized");
+        return JNI_FALSE;
+    }
 
-    return start_pipeline();
+    return g_pipeline->start() ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
+ * Feed audio data to the pipeline
+ */
+static jboolean native_feed_audio_data(JNIEnv *env, jobject thiz,
+                                        jbyteArray buffer, jint size) {
+    if (!g_pipeline) {
+        return JNI_TRUE; // Silently ignore if no pipeline
+    }
+
+    // Get buffer data
+    jbyte *buffer_data = env->GetByteArrayElements(buffer, nullptr);
+    if (!buffer_data) {
+        LOGE("Failed to get buffer data");
+        return JNI_FALSE;
+    }
+
+    // Push data to pipeline
+    bool result = g_pipeline->push_data(
+        reinterpret_cast<const guint8*>(buffer_data),
+        static_cast<gsize>(size)
+    );
+
+    // Release buffer (no need to copy back)
+    env->ReleaseByteArrayElements(buffer, buffer_data, JNI_ABORT);
+
+    return result ? JNI_TRUE : JNI_FALSE;
 }
 
 /**
  * Stop the GStreamer pipeline
  */
-JNIEXPORT void JNICALL
-Java_com_justivo_heavenwaves_AudioCaptureService_nativeStopPipeline(
-        JNIEnv *env, jobject thiz) {
-
-    stop_pipeline();
+static void native_stop_pipeline(JNIEnv *env, jobject thiz) {
+    if (g_pipeline) {
+        g_pipeline->stop();
+        g_pipeline.reset();
+    }
 }
 
 /**
- * Get the last error message from the pipeline
- *
- * @return Last error message, or empty string if no error
+ * Get last error message
  */
-JNIEXPORT jstring JNICALL
-Java_com_justivo_heavenwaves_AudioCaptureService_nativeGetLastError(
-        JNIEnv *env, jobject thiz) {
+static jstring native_get_last_error(JNIEnv *env, jobject thiz) {
+    if (!g_pipeline) {
+        return env->NewStringUTF("Pipeline not initialized");
+    }
 
-    std::string error = get_last_error();
+    std::string error = g_pipeline->get_last_error();
     return env->NewStringUTF(error.c_str());
 }
 
-} // extern "C"
+// ============================================================================
+// JNI Method Registration
+// ============================================================================
+
+/**
+ * Native method table for AudioCaptureService
+ */
+static JNINativeMethod native_methods[] = {
+    {"nativeInitPipeline", "(IILjava/lang/String;I)Z", (void *) native_init_pipeline},
+    {"nativeStartPipeline", "()Z", (void *) native_start_pipeline},
+    {"nativeFeedAudioData", "([BI)Z", (void *) native_feed_audio_data},
+    {"nativeStopPipeline", "()V", (void *) native_stop_pipeline},
+    {"nativeGetLastError", "()Ljava/lang/String;", (void *) native_get_last_error}
+};
+
+/**
+ * JNI_OnLoad - Called when the library is loaded
+ * Registers native methods for both AudioCaptureService and GStreamer classes
+ */
+JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
+    JNIEnv *env = nullptr;
+
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        LOGE("Failed to get JNI environment");
+        return JNI_ERR;
+    }
+
+    // Register AudioCaptureService methods
+    jclass audio_service_class = env->FindClass("com/justivo/heavenwaves/AudioCaptureService");
+    if (!audio_service_class) {
+        LOGE("Failed to find AudioCaptureService class");
+        return JNI_ERR;
+    }
+
+    if (env->RegisterNatives(audio_service_class, native_methods, G_N_ELEMENTS(native_methods))) {
+        LOGE("Failed to register AudioCaptureService native methods");
+        return JNI_ERR;
+    }
+
+    LOGI("AudioCaptureService native methods registered successfully");
+
+    // Register GStreamer class methods (implemented in gstreamer-info.cpp)
+    if (register_gstreamer_methods(env) != JNI_OK) {
+        LOGE("Failed to register GStreamer native methods");
+        return JNI_ERR;
+    }
+
+    LOGI("All native methods registered successfully");
+
+    return JNI_VERSION_1_6;
+}
