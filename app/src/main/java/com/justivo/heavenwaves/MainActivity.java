@@ -72,5 +72,38 @@ public class MainActivity extends AppCompatActivity {
         String gstreamerInfo = GStreamer.nativeGetGStreamerInfo();
         TextView textView = findViewById(R.id.gstreamer_info_text);
         textView.setText(gstreamerInfo);
+
+        // Initialize MediaProjectionManager
+        mediaProjectionManager = (MediaProjectionManager)
+                getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+
+        // Initialize UI elements
+        startButton = findViewById(R.id.start_button);
+        stopButton = findViewById(R.id.stop_button);
+        statusText = findViewById(R.id.status_text);
+
+        // Set up button listeners
+        startButton.setOnClickListener(v -> requestMediaProjection());
+        stopButton.setOnClickListener(v -> stopAudioCapture());
+    }
+
+    private void requestMediaProjection() {
+        Intent intent = mediaProjectionManager.createScreenCaptureIntent();
+        mediaProjectionLauncher.launch(intent);
+    }
+
+    private void stopAudioCapture() {
+        Intent serviceIntent = new Intent(this, AudioCaptureService.class);
+        serviceIntent.setAction("AudioCaptureService:Stop");
+        startService(serviceIntent);
+
+        updateUIState(false);
+        Toast.makeText(this, "Audio capture stopped", Toast.LENGTH_SHORT).show();
+    }
+
+    private void updateUIState(boolean isRecording) {
+        startButton.setEnabled(!isRecording);
+        stopButton.setEnabled(isRecording);
+        statusText.setText(isRecording ? "Status: Recording" : "Status: Not Recording");
     }
 }
