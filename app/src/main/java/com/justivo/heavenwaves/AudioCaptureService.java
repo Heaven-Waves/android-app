@@ -466,9 +466,11 @@ public class AudioCaptureService extends Service {
     private void createNotificationChannel() {
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "Audio Capture Service Channel",
+                "Audio Capture Service",
                 NotificationManager.IMPORTANCE_HIGH
         );
+        channel.setDescription("Shows when audio capture is active");
+        channel.setShowBadge(true);
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(channel);
     }
@@ -492,6 +494,9 @@ public class AudioCaptureService extends Service {
                 .setContentText("Capturing system audio...")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setLargeIcon(largeIcon)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setSilent(true)
                 .setOngoing(true)
                 .setContentIntent(pendingIntent)
