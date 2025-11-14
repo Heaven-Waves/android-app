@@ -28,23 +28,51 @@
         android:text="Requires Permissions"
         android:textSize="18sp"
         android:textStyle="bold"
-        app:layout_constraintBottom_toTopOf="@+id/start_button"
+        app:layout_constraintBottom_toTopOf="@+id/host_input_label"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/gstreamer_info_text" />
+
+    <TextView
+        android:id="@+id/host_input_label"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="Stream Host:"
+        android:textSize="14sp"
+        app:layout_constraintBottom_toTopOf="@+id/host_input"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/status_text"
+        app:layout_constraintWidth_percent="0.8" />
+
+    <EditText
+        android:id="@+id/host_input"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:hint="192.168.1.100"
+        android:inputType="text"
+        android:textSize="16sp"
+        android:padding="12dp"
+        app:layout_constraintBottom_toTopOf="@+id/start_button"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/host_input_label"
+        app:layout_constraintWidth_percent="0.8" />
 
     <Button
         android:id="@+id/start_button"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginTop="32dp"
+        android:layout_marginTop="24dp"
         android:text="Start Audio Capture"
         android:textSize="16sp"
         android:enabled="false"
         app:layout_constraintBottom_toTopOf="@+id/stop_button"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/status_text"
+        app:layout_constraintTop_toBottomOf="@+id/host_input"
         app:layout_constraintWidth_percent="0.8" />
 
     <Button

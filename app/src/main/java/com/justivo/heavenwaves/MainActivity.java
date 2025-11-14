@@ -44,6 +44,7 @@ public class MainActivity extends AppCompatActivity {
     private Button startButton;
     private Button stopButton;
     private TextView statusText;
+    private android.widget.EditText hostInput;
 
     @SuppressLint("InlinedApi")
     private final String[] permissionsToRequest = {
@@ -75,9 +76,17 @@ public class MainActivity extends AppCompatActivity {
             new ActivityResultContracts.StartActivityForResult(),
             result -> {
                 if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                    // Get host value from input field
+                    String host = hostInput.getText().toString().trim();
+                    if (host.isEmpty()) {
+                        Toast.makeText(this, "Please enter a host address", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+
                     // Permission granted, start the service
                     Intent serviceIntent = new Intent(this, AudioCaptureService.class);
                     serviceIntent.putExtra("MEDIA_PROJECTION", result.getData());
+                    serviceIntent.putExtra("HOST", host);
                     startForegroundService(serviceIntent);
 
                     updateUIState(true);
@@ -123,6 +132,7 @@ public class MainActivity extends AppCompatActivity {
         startButton = findViewById(R.id.start_button);
         stopButton = findViewById(R.id.stop_button);
         statusText = findViewById(R.id.status_text);
+        hostInput = findViewById(R.id.host_input);
 
         // Set up button listeners
         startButton.setOnClickListener(v -> requestMediaProjection());
@@ -130,6 +140,7 @@ public class MainActivity extends AppCompatActivity {
 
         // Request necessary permissions on startup
         permissionsLauncher.launch(permissionsToRequest);
+        updateUIState(false);
     }
 
     private void showNextPermissionDialog() {
@@ -161,6 +172,7 @@ public class MainActivity extends AppCompatActivity {
                 .onDismiss(permissionDialogQueue::removeFirst)
                 .onContinue(() -> {
                     permissionsLauncher.launch(new String[] { permission });
+                    updateUIState(false);
                 })
                 .onGoToAppSettingsClick(this::openAppSettings)
                 .build();
@@ -185,7 +197,7 @@ public class MainActivity extends AppCompatActivity {
     private void updateUIState(boolean isRecording) {
         startButton.setEnabled(!isRecording);
         stopButton.setEnabled(isRecording);
-        statusText.setText(permissionDialogQueue.toString());
+        statusText.setText(isRecording ? "Recording..." : "Not recording");
     }
 
     private void openAppSettings() {
