@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.Context;
@@ -45,6 +46,24 @@ public class AudioCaptureService extends Service {
     private AudioRecord audioRecord;
     private Thread captureThread;
     private volatile boolean isCapturing = false;
+    private String streamHost = "127.0.0.1";
+    private boolean saveToFile = false;
+
+    // Native method declarations for GStreamer pipeline
+    private native boolean nativeInitPipeline(String host, int sampleRate, int channels, String outputPath, int bitrate);
+    private native boolean nativeFeedAudioData(byte[] buffer, int size);
+    private native boolean nativeStartPipeline();
+    private native void nativeStopPipeline();
+    private native String nativeGetLastError();
+
+    // Load native library
+    static {
+        try {
+            System.loadLibrary("audio_bridge");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "Failed to load audio_bridge native library: " + e.getMessage());
+        }
+    }
 
 
     @Override
@@ -68,6 +87,18 @@ public class AudioCaptureService extends Service {
         }
 
         if (intent.hasExtra("MEDIA_PROJECTION")) {
+            // Get host from intent if provided
+            if (intent.hasExtra("HOST")) {
+                streamHost = intent.getStringExtra("HOST");
+                Log.i(TAG, "Stream host set to: " + streamHost);
+            }
+
+            // Get save to file preference from intent
+            if (intent.hasExtra("SAVE_TO_FILE")) {
+                saveToFile = intent.getBooleanExtra("SAVE_TO_FILE", false);
+                Log.i(TAG, "Save to file: " + saveToFile);
+            }
+
             // IMPORTANT: Start foreground service BEFORE getting MediaProjection
             // Android requires the service to be in foreground mode with MEDIA_PROJECTION type
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -152,6 +183,41 @@ public class AudioCaptureService extends Service {
                 return;
             }
 
+            java.io.File outputDir = getExternalFilesDir(null);
+            if (outputDir == null) {
+                outputDir = getFilesDir();
+            }
+            String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                    .format(new java.util.Date());
+            String gstreamerOutputPath = new java.io.File(outputDir, "audio_gstreamer_" + timestamp + ".ogg")
+                    .getAbsolutePath();
+
+            Log.i(TAG, "Initializing GStreamer pipeline with output: " + gstreamerOutputPath);
+            Log.i(TAG, "Streaming to host: " + streamHost);
+
+            // Initialize pipeline with 128kbps bitrate for Opus
+            boolean pipelineInitialized = nativeInitPipeline(streamHost,
+                    SAMPLE_RATE,
+                    NUM_CHANNELS,
+                    gstreamerOutputPath,
+                    128000);
+
+            if (!pipelineInitialized) {
+                String error = nativeGetLastError();
+                Log.e(TAG, "Failed to initialize GStreamer pipeline: " + error);
+                Log.w(TAG, "Continuing with Java-only audio recording");
+            } else {
+                // Start the pipeline
+                boolean pipelineStarted = nativeStartPipeline();
+                if (!pipelineStarted) {
+                    String error = nativeGetLastError();
+                    Log.e(TAG, "Failed to start GStreamer pipeline: " + error);
+                    Log.w(TAG, "Continuing with Java-only audio recording");
+                } else {
+                    Log.i(TAG, "GStreamer pipeline started successfully");
+                }
+            }
+
             // Start capture thread
             captureThread = new Thread(new AudioCaptureRunnable(bufferSize));
             captureThread.setPriority(Thread.MAX_PRIORITY);
@@ -182,23 +248,30 @@ public class AudioCaptureService extends Service {
             this.bufferSize = bufferSize;
             this.audioBuffer = ByteBuffer.allocateDirect(bufferSize);
 
-            // Create output file in app's external files directory
-            java.io.File outputDir = getExternalFilesDir(null);
-            if (outputDir == null) {
-                outputDir = getFilesDir();
-            }
+            // Create output file only if saving is enabled
+            if (saveToFile) {
+                // Create output file in app's external files directory
+                java.io.File outputDir = getExternalFilesDir(null);
+                if (outputDir == null) {
+                    outputDir = getFilesDir();
+                }
 
-            String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
-                    .format(new java.util.Date());
-            this.outputFile = new java.io.File(outputDir, "audio_capture_" + timestamp + ".wav");
+                String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                        .format(new java.util.Date());
+                this.outputFile = new java.io.File(outputDir, "audio_capture_" + timestamp + ".wav");
 
-            try {
-                this.fileOutputStream = new java.io.FileOutputStream(outputFile);
-                writeWavHeader(fileOutputStream, SAMPLE_RATE, NUM_CHANNELS);
-                Log.i(TAG, "Recording audio to: " + outputFile.getAbsolutePath());
-            } catch (java.io.IOException e) {
-                Log.e(TAG, "Failed to create output file: " + e.getMessage());
+                try {
+                    this.fileOutputStream = new java.io.FileOutputStream(outputFile);
+                    writeWavHeader(fileOutputStream, SAMPLE_RATE, NUM_CHANNELS);
+                    Log.i(TAG, "Recording audio to: " + outputFile.getAbsolutePath());
+                } catch (java.io.IOException e) {
+                    Log.e(TAG, "Failed to create output file: " + e.getMessage());
+                    this.fileOutputStream = null;
+                }
+            } else {
+                this.outputFile = null;
                 this.fileOutputStream = null;
+                Log.i(TAG, "File saving disabled - streaming only");
             }
         }
 
@@ -296,15 +369,19 @@ public class AudioCaptureService extends Service {
                         audioBuffer.get(buffer, 0, readFloats * 4);
                         dataSize = readFloats * 4;
 
-                        // TODO: Process audio data here - send to JNI or callback
-                        // processAudioData(buffer, dataSize);
-                        // Write audio data to file
+                        // Write audio data to file (Java - for testing/debugging)
                         if (fileOutputStream != null) {
                             try {
                                 fileOutputStream.write(buffer, 0, dataSize);
                             } catch (java.io.IOException e) {
                                 Log.e(TAG, "Error writing audio data: " + e.getMessage());
                             }
+                        }
+
+                        // Feed audio data to GStreamer pipeline
+                        if (!nativeFeedAudioData(buffer, dataSize)) {
+                            String error = nativeGetLastError();
+                            Log.w(TAG, "Failed to feed audio data to GStreamer: " + error);
                         }
                     }
                 } else {
@@ -317,16 +394,19 @@ public class AudioCaptureService extends Service {
 
                     if (bytesRead > 0) {
                         dataSize = bytesRead;
-                        // TODO: Process audio data here - send to JNI or callback
-                        // processAudioData(buffer, dataSize);
 
-                        // Write audio data to file
-                        if (fileOutputStream != null) {
+                        if (fileOutputStream != null && saveToFile) {
                             try {
                                 fileOutputStream.write(buffer, 0, dataSize);
                             } catch (java.io.IOException e) {
                                 Log.e(TAG, "Error writing audio data: " + e.getMessage());
                             }
+                        }
+
+                        // Feed audio data to GStreamer pipeline
+                        if (!nativeFeedAudioData(buffer, dataSize)) {
+                            String error = nativeGetLastError();
+                            Log.w(TAG, "Failed to feed audio data to GStreamer: " + error);
                         }
                     }
                 }
@@ -337,8 +417,8 @@ public class AudioCaptureService extends Service {
                 }
             }
 
-            // Close file and update WAV header
-            if (fileOutputStream != null) {
+            // Close file and update WAV header (only if saving to file)
+            if (saveToFile && fileOutputStream != null) {
                 try {
                     fileOutputStream.close();
                     // Update WAV header with correct file size
@@ -354,6 +434,14 @@ public class AudioCaptureService extends Service {
 
     private void stopAudioCapture() {
         isCapturing = false;
+
+        // Stop GStreamer pipeline first
+        try {
+            Log.i(TAG, "Stopping GStreamer pipeline");
+            nativeStopPipeline();
+        } catch (Exception e) {
+            Log.e(TAG, "Error stopping GStreamer pipeline: " + e.getMessage());
+        }
 
         if (audioRecord != null) {
             try {
@@ -388,6 +476,17 @@ public class AudioCaptureService extends Service {
     private Notification createNotification() {
         Bitmap largeIcon = BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher);
 
+        // Create intent to open MainActivity when notification is tapped
+        Intent notificationIntent = new Intent(this, MainActivity.class);
+        notificationIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        PendingIntent pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                notificationIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Audio Capture Active")
                 .setContentText("Capturing system audio...")
@@ -395,6 +494,7 @@ public class AudioCaptureService extends Service {
                 .setLargeIcon(largeIcon)
                 .setSilent(true)
                 .setOngoing(true)
+                .setContentIntent(pendingIntent)
                 .build();
     }
 
