@@ -8,6 +8,8 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.Context;
 import android.content.pm.ServiceInfo;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioPlaybackCaptureConfiguration;
@@ -17,6 +19,9 @@ import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
+
+import androidx.core.app.NotificationCompat;
+
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
@@ -25,7 +30,7 @@ public class AudioCaptureService extends Service {
 
     private static final String ACTION_START = "AudioCaptureService:Start";
     private static final String ACTION_STOP = "AudioCaptureService:Stop";
-    private static final String CHANNEL_ID = "AudioCaptureChannel";
+    private static final String CHANNEL_ID = "HeavenWavesAudioCaptureChannel";
     private static final int NOTIFICATION_ID = 1;
 
     // Audio configuration for maximum quality
@@ -62,7 +67,7 @@ public class AudioCaptureService extends Service {
             return START_NOT_STICKY;
         }
 
-        if (intent != null && intent.hasExtra("MEDIA_PROJECTION")) {
+        if (intent.hasExtra("MEDIA_PROJECTION")) {
             // IMPORTANT: Start foreground service BEFORE getting MediaProjection
             // Android requires the service to be in foreground mode with MEDIA_PROJECTION type
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -373,18 +378,23 @@ public class AudioCaptureService extends Service {
     private void createNotificationChannel() {
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "Audio Capture Service",
-                NotificationManager.IMPORTANCE_DEFAULT
+                "Audio Capture Service Channel",
+                NotificationManager.IMPORTANCE_HIGH
         );
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(channel);
     }
 
     private Notification createNotification() {
-        return new Notification.Builder(this, CHANNEL_ID)
+        Bitmap largeIcon = BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher);
+
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Audio Capture Active")
                 .setContentText("Capturing system audio...")
-                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setLargeIcon(largeIcon)
+                .setSilent(true)
+                .setOngoing(true)
                 .build();
     }
 
