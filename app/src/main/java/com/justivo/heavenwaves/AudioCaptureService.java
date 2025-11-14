@@ -45,7 +45,8 @@ public class AudioCaptureService extends Service {
     private AudioRecord audioRecord;
     private Thread captureThread;
     private volatile boolean isCapturing = false;
-    private String streamHost = "127.0.0.1"; // Default host
+    private String streamHost = "127.0.0.1";
+    private boolean saveToFile = false;
 
     // Native method declarations for GStreamer pipeline
     private native boolean nativeInitPipeline(String host, int sampleRate, int channels, String outputPath, int bitrate);
@@ -89,6 +90,12 @@ public class AudioCaptureService extends Service {
             if (intent.hasExtra("HOST")) {
                 streamHost = intent.getStringExtra("HOST");
                 Log.i(TAG, "Stream host set to: " + streamHost);
+            }
+
+            // Get save to file preference from intent
+            if (intent.hasExtra("SAVE_TO_FILE")) {
+                saveToFile = intent.getBooleanExtra("SAVE_TO_FILE", false);
+                Log.i(TAG, "Save to file: " + saveToFile);
             }
 
             // IMPORTANT: Start foreground service BEFORE getting MediaProjection
@@ -240,23 +247,30 @@ public class AudioCaptureService extends Service {
             this.bufferSize = bufferSize;
             this.audioBuffer = ByteBuffer.allocateDirect(bufferSize);
 
-            // Create output file in app's external files directory
-            java.io.File outputDir = getExternalFilesDir(null);
-            if (outputDir == null) {
-                outputDir = getFilesDir();
-            }
+            // Create output file only if saving is enabled
+            if (saveToFile) {
+                // Create output file in app's external files directory
+                java.io.File outputDir = getExternalFilesDir(null);
+                if (outputDir == null) {
+                    outputDir = getFilesDir();
+                }
 
-            String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
-                    .format(new java.util.Date());
-            this.outputFile = new java.io.File(outputDir, "audio_capture_" + timestamp + ".wav");
+                String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                        .format(new java.util.Date());
+                this.outputFile = new java.io.File(outputDir, "audio_capture_" + timestamp + ".wav");
 
-            try {
-                this.fileOutputStream = new java.io.FileOutputStream(outputFile);
-                writeWavHeader(fileOutputStream, SAMPLE_RATE, NUM_CHANNELS);
-                Log.i(TAG, "Recording audio to: " + outputFile.getAbsolutePath());
-            } catch (java.io.IOException e) {
-                Log.e(TAG, "Failed to create output file: " + e.getMessage());
+                try {
+                    this.fileOutputStream = new java.io.FileOutputStream(outputFile);
+                    writeWavHeader(fileOutputStream, SAMPLE_RATE, NUM_CHANNELS);
+                    Log.i(TAG, "Recording audio to: " + outputFile.getAbsolutePath());
+                } catch (java.io.IOException e) {
+                    Log.e(TAG, "Failed to create output file: " + e.getMessage());
+                    this.fileOutputStream = null;
+                }
+            } else {
+                this.outputFile = null;
                 this.fileOutputStream = null;
+                Log.i(TAG, "File saving disabled - streaming only");
             }
         }
 
@@ -354,9 +368,6 @@ public class AudioCaptureService extends Service {
                         audioBuffer.get(buffer, 0, readFloats * 4);
                         dataSize = readFloats * 4;
 
-                        // TODO: Process audio data here - send to JNI or callback
-                        // processAudioData(buffer, dataSize);
-
                         // Write audio data to file (Java - for testing/debugging)
                         if (fileOutputStream != null) {
                             try {
@@ -382,11 +393,8 @@ public class AudioCaptureService extends Service {
 
                     if (bytesRead > 0) {
                         dataSize = bytesRead;
-                        // TODO: Process audio data here - send to JNI or callback
-                        // processAudioData(buffer, dataSize);
 
-                        // Write audio data to file (Java - for testing/debugging)
-                        if (fileOutputStream != null) {
+                        if (fileOutputStream != null && saveToFile) {
                             try {
                                 fileOutputStream.write(buffer, 0, dataSize);
                             } catch (java.io.IOException e) {
@@ -408,8 +416,8 @@ public class AudioCaptureService extends Service {
                 }
             }
 
-            // Close file and update WAV header
-            if (fileOutputStream != null) {
+            // Close file and update WAV header (only if saving to file)
+            if (saveToFile && fileOutputStream != null) {
                 try {
                     fileOutputStream.close();
                     // Update WAV header with correct file size

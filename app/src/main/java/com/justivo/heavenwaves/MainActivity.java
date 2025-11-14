@@ -45,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
     private Button stopButton;
     private TextView statusText;
     private android.widget.EditText hostInput;
+    private android.widget.CheckBox saveToFile;
 
     @SuppressLint("InlinedApi")
     private final String[] permissionsToRequest = {
@@ -87,6 +88,7 @@ public class MainActivity extends AppCompatActivity {
                     Intent serviceIntent = new Intent(this, AudioCaptureService.class);
                     serviceIntent.putExtra("MEDIA_PROJECTION", result.getData());
                     serviceIntent.putExtra("HOST", host);
+                    serviceIntent.putExtra("SAVE_TO_FILE", saveToFile.isChecked());
                     startForegroundService(serviceIntent);
 
                     updateUIState(true);
@@ -133,6 +135,7 @@ public class MainActivity extends AppCompatActivity {
         stopButton = findViewById(R.id.stop_button);
         statusText = findViewById(R.id.status_text);
         hostInput = findViewById(R.id.host_input);
+        saveToFile = findViewById(R.id.save_to_file_checkbox);
 
         // Set up button listeners
         startButton.setOnClickListener(v -> requestMediaProjection());
@@ -197,6 +200,7 @@ public class MainActivity extends AppCompatActivity {
     private void updateUIState(boolean isRecording) {
         startButton.setEnabled(!isRecording);
         stopButton.setEnabled(isRecording);
+        saveToFile.setEnabled(!isRecording);
         statusText.setText(isRecording ? "Recording..." : "Not recording");
     }
 

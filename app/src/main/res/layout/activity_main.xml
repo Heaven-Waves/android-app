@@ -12,7 +12,7 @@
         android:id="@+id/gstreamer_info_text"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Hello World!"
+        android:text="GStreamer Version"
         android:textSize="16sp"
         app:layout_constraintBottom_toTopOf="@+id/status_text"
         app:layout_constraintEnd_toEndOf="parent"
@@ -53,26 +53,41 @@
         android:layout_marginTop="8dp"
         android:hint="192.168.1.100"
         android:inputType="text"
-        android:textSize="16sp"
         android:padding="12dp"
+        android:textSize="16sp"
+        app:layout_constraintBottom_toTopOf="@+id/save_to_file_checkbox"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_bias="0.506"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/host_input_label"
+        app:layout_constraintWidth_percent="0.8" />
+
+    <CheckBox
+        android:id="@+id/save_to_file_checkbox"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:checked="false"
+        android:text="Save stream to file"
+        android:textSize="14sp"
         app:layout_constraintBottom_toTopOf="@+id/start_button"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/host_input_label"
+        app:layout_constraintTop_toBottomOf="@+id/host_input"
         app:layout_constraintWidth_percent="0.8" />
 
     <Button
         android:id="@+id/start_button"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
+        android:layout_marginTop="16dp"
+        android:enabled="false"
         android:text="Start Audio Capture"
         android:textSize="16sp"
-        android:enabled="false"
         app:layout_constraintBottom_toTopOf="@+id/stop_button"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/host_input"
+        app:layout_constraintTop_toBottomOf="@id/save_to_file_checkbox"
         app:layout_constraintWidth_percent="0.8" />
 
     <Button
