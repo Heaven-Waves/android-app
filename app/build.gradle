@@ -15,6 +15,28 @@ android {
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+        }
+
+        externalNativeBuild {
+            ndkBuild {
+                def gstRoot
+
+                if (project.hasProperty('gstAndroidRoot'))
+                    gstRoot = project.gstAndroidRoot
+                else
+                    gstRoot = System.env.GSTREAMER_ROOT_ANDROID
+
+                if (gstRoot == null)
+                    throw new GradleException('GSTREAMER_ROOT_ANDROID must be set, or "gstAndroidRoot" must be defined in your gradle.properties in the top level directory of the unpacked universal GStreamer Android binaries')
+
+                arguments "GSTREAMER_ROOT_ANDROID=$gstRoot"
+
+                targets 'audio_bridge'
+            }
+        }
     }
 
     buildTypes {
